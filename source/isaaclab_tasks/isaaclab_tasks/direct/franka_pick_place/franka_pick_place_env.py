@@ -110,8 +110,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     )
 
     
-    # other cube
-    # Set Cube as object
+    # cube
     dexcube = RigidObjectCfg(
         prim_path="/World/envs/env_.*/dexcube",
         init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.055], rot=[1, 0, 0, 0]),
@@ -503,10 +502,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.robot_grasp_rot[env_ids], self.robot_grasp_pos[env_ids] = tf_combine(
             hand_rot, hand_pos, self.robot_local_grasp_rot[env_ids], self.robot_local_grasp_pos[env_ids]
             )
+                
+        self.cube_pos = self._dexcube.data.body_link_state_w[:, 0, :3]  # (num_envs, 3)
+        self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
+        self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
         
-        self.cube_pos = self._dexcube.data.root_pos_w[:, :3] # (num_envs, 3)
-        self.cube_rot = self._dexcube.data.body_quat_w.squeeze(1) # have to squeeze to remove unwanted dimension
-        self.cube_vel = self._dexcube.data.body_vel_w.squeeze(1)
         
         POS = self.robot_grasp_pos
         ROT = self.robot_grasp_rot
