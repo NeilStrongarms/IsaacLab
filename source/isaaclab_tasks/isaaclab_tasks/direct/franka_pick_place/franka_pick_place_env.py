@@ -7,24 +7,24 @@ from __future__ import annotations
 
 import torch
 
-from omni.isaac.core.utils.stage import get_current_stage
-from omni.isaac.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
-from omni.isaac.core.utils.torch.rotations import quat_rotate
+from isaacsim.core.utils.stage import get_current_stage
+from isaacsim.core.utils.torch.transformations import tf_combine, tf_inverse, tf_vector
+from isaacsim.core.utils.torch.rotations import quat_rotate
 from pxr import UsdGeom
 
-import omni.isaac.lab.sim as sim_utils
-from omni.isaac.lab.actuators.actuator_cfg import ImplicitActuatorCfg
-from omni.isaac.lab.assets import Articulation, ArticulationCfg, RigidObjectCfg, RigidObject
-from omni.isaac.lab.envs import DirectRLEnv, DirectRLEnvCfg
-from omni.isaac.lab.scene import InteractiveSceneCfg
-from omni.isaac.lab.sim import SimulationCfg
-from omni.isaac.lab.terrains import TerrainImporterCfg
-from omni.isaac.lab.utils import configclass
-from omni.isaac.lab.utils.assets import ISAAC_NUCLEUS_DIR
-from omni.isaac.lab.utils.math import sample_uniform
-from omni.isaac.lab.markers import VisualizationMarkers
-from omni.isaac.lab.markers.config import FRAME_MARKER_CFG
-from omni.isaac.lab.utils.math import subtract_frame_transforms
+import isaaclab.sim as sim_utils
+from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
+from isaaclab.assets import  Articulation, ArticulationCfg, RigidObjectCfg, RigidObject
+from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import SimulationCfg
+from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.utils import configclass
+from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
+from isaaclab.utils.math import sample_uniform
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers.config import FRAME_MARKER_CFG
+from isaaclab.utils.math import subtract_frame_transforms
 
 
 
@@ -33,9 +33,9 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333 # 5.0 in franka Lift
     decimation = 2
-    num_actions = 9         # the dimension of the action space for each environment
-    num_observations = 27    # the dimension of the observation space from each environment instance
-    num_states = 0
+    action_space = 9         # the dimension of the action space for each environment
+    observation_space = 27    # the dimension of the observation space from each environment instance
+    state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(
@@ -146,6 +146,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     # markers
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+    frame_marker_cfg.prim_path = "/Visuals/FrameMarker"
 
     # scaling factors
     action_scale = 7.5

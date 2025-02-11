@@ -9,7 +9,6 @@ Franka Pick Place environment.
 import gymnasium as gym
 
 from . import agents
-# from .franka_pick_place_env import FrankaPickPlaceEnv, FrankaPickPlaceEnvCfg
 
 ##
 # Register Gym environments.

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 import argparse
-from omni.isaac.lab.app import AppLauncher
+from isaaclab.app import AppLauncher
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Running Franka pick place direct environment")
