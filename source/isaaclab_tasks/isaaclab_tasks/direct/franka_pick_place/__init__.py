@@ -9,7 +9,7 @@ Franka Pick Place environment.
 import gymnasium as gym
 
 from . import agents
-from .franka_pick_place_env import FrankaPickPlaceEnv, FrankaPickPlaceEnvCfg
+# from .franka_pick_place_env import FrankaPickPlaceEnv, FrankaPickPlaceEnvCfg
 
 ##
 # Register Gym environments.
@@ -17,13 +17,12 @@ from .franka_pick_place_env import FrankaPickPlaceEnv, FrankaPickPlaceEnvCfg
 
 gym.register(
     id="Isaac-Franka-Pick-Place-Direct-v0",
-    entry_point="omni.isaac.lab_tasks.direct.franka_pick_place:FrankaPickPlaceEnv",
+    entry_point=f"{__name__}.franka_pick_place_env:FrankaPickPlaceEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": FrankaPickPlaceEnvCfg,
+        "env_cfg_entry_point": f"{__name__}.franka_pick_place_env:FrankaPickPlaceEnvCfg",
         "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FrankaPickPlacePPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
-        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
     },
 )
