@@ -155,10 +155,10 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     # reward scales
     dist_reward_scale = 1.0
     rot_reward_scale = 0.0
-    lift_reward_scale = 15
+    target_reward_scale = 50
+    lift_reward_scale = 10
     velocity_penalty_scale = -0.0001 * 2
     action_penalty_scale = -0.0001
-    target_reward_scale = 15
 
 
 class FrankaPickPlaceEnv(DirectRLEnv):
@@ -257,12 +257,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             (self.num_envs, 1)
         )
 
-        # defining additional atributes for plotting
-        self.dist_rew = torch.zeros((self.num_envs, 1), device=self.device)
-        self.rot_rew = torch.zeros((self.num_envs, 1), device=self.device)
-        self.lift_rew = torch.zeros((self.num_envs, 1), device=self.device)
-        self.velocity_pen = torch.zeros((self.num_envs, 1), device=self.device)
-        
+
 
     def _setup_scene(self):
         
@@ -419,8 +414,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         
         # getting to target
-        d = torch.norm(self.cube_pos - self.target_pos)
-        target_reward = 1.0 - torch.tanh(d / 0.1)
+        d = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
+        target_reward = 1.0 - torch.tanh(d / 0.15)
         total_reward += target_reward * self.cfg.target_reward_scale
         
         
@@ -436,18 +431,13 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.extras["log"] = {
             "dist_reward": (self.cfg.dist_reward_scale * dist_reward).mean(),
             "rot_reward": (self.cfg.rot_reward_scale * rot_reward).mean(),
-            "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
-            "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
-            "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
             "target_reward": (self.cfg.target_reward_scale * target_reward).mean(),
+            "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
+            "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
+            "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
             "num_lifted": (num_lifted),
         }
         # print(f'cube position: \n{self.cube_pos[:4]} and target position: \n{self.target_pos[:4]} ') # seems all correct
-        
-        self.dist_rew = self.cfg.dist_reward_scale * dist_reward
-        self.rot_rew = self.cfg.rot_reward_scale * rot_reward
-        self.velocity_pen= -self.cfg.velocity_penalty_scale * vel_penalty
-        self.lift_rew = self.cfg.lift_reward_scale * is_lifted
 
         return total_reward
     
@@ -519,7 +509,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
         
-        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0], device=self.device).repeat(self.num_envs,1)
+        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.5], device=self.device).repeat(self.num_envs,1)
         self.target_rot = torch.tensor([1, 0, 0, 0], device=self.device).repeat(self.num_envs,1)
         
         self.ee_marker.visualize(self.robot_grasp_pos, self.robot_grasp_rot)
