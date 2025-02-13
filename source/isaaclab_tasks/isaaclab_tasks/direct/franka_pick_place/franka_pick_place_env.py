@@ -154,10 +154,10 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     
     # reward scales
     dist_reward_scale = 1.0
-    rot_reward_scale = 0.0
+    rot_reward_scale = 0.1
     target_reward_scale = 50
     lift_reward_scale = 10
-    velocity_penalty_scale = -0.0001 * 2
+    velocity_penalty_scale = -0.0001 * 10
     action_penalty_scale = -0.0001
 
 
@@ -254,6 +254,12 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             (self.num_envs, 1)
         )
         self.cube_side_axis = torch.tensor([0, -1, 0], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.target_up_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.target_side_axis = torch.tensor([0, -1, 0], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
 
@@ -376,17 +382,19 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         # rotation reward
         # tf_vector(rotation,vector)
-        axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis) 
-        axis2 = tf_vector(self.cube_rot, self.cube_up_axis)
+        axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
+        axis2 = tf_vector(self.robot_grasp_rot, self.gripper_side_axis)
         
-        axis3 = tf_vector(self.robot_grasp_rot, self.gripper_side_axis)
+        axis3 = tf_vector(self.cube_rot, self.cube_up_axis)
         axis4 = tf_vector(self.cube_rot, self.cube_side_axis)
         
-        dot1 = torch.bmm(axis1.view(self.num_envs, 1, 3), axis2.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
-        dot2 = torch.bmm(axis3.view(self.num_envs, 1, 3), axis4.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
+        axis5 = tf_vector(self.target_rot, self.target_up_axis)
+        axis6 = tf_vector(self.target_rot, self.target_side_axis)
         
-        rot_reward1 = -1*(torch.sign(dot1) * dot1**2) # multiply by -1 becuase vectors point away from each other
-        rot_reward2 = torch.sign(dot2) * dot2**2
+        dot1 = torch.bmm(axis2.view(self.num_envs, 1, 3), axis5.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
+        
+        rot_reward1 = 1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
+        # rot_reward2 = torch.sign(dot2) * dot2**2
         rot_reward = (rot_reward1) # + rot_reward2
         total_reward += rot_reward * self.cfg.rot_reward_scale
         
@@ -409,7 +417,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             lift_reward = torch.exp(self.cube_pos - cube_offset)   
             
         total_reward += lift_reward * self.cfg.lift_reward_scale
-        is_lifted = torch.where(self.cube_pos[:, 2] > 0.1, 1.0, 0.0)
         num_lifted = torch.sum(torch.where(self.cube_pos[:,2] > 0.1, 1.0, 0.0))
         
         
@@ -504,16 +511,14 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.robot_grasp_rot[env_ids], self.robot_grasp_pos[env_ids] = tf_combine(
             hand_rot, hand_pos, self.robot_local_grasp_rot[env_ids], self.robot_local_grasp_pos[env_ids]
             )
-                
+
         self.cube_pos = self._dexcube.data.body_link_state_w[:, 0, :3]  # (num_envs, 3)
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
         
         self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.5], device=self.device).repeat(self.num_envs,1)
-        self.target_rot = torch.tensor([1, 0, 0, 0], device=self.device).repeat(self.num_envs,1)
+        self.target_rot = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs,1)
         
         self.ee_marker.visualize(self.robot_grasp_pos, self.robot_grasp_rot)
         self.cube_marker.visualize(self.cube_pos,self.cube_rot)
         self.target_marker.visualize(self.target_pos, self.target_rot)
-
-
