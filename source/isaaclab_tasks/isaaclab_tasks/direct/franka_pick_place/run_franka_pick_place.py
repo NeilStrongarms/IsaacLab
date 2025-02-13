@@ -31,7 +31,7 @@ def main():
     """Main function."""
     env_cfg = FrankaPickPlaceEnvCfg()
     # env_cfg.scene.num_envs = args_cli.num_envs
-    env_cfg.scene.num_envs = 1
+    env_cfg.scene.num_envs = 3
     # setup environment
     env = FrankaPickPlaceEnv(cfg=env_cfg)
 

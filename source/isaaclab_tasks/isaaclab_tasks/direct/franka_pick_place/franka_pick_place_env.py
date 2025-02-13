@@ -142,6 +142,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
         ),
     )
 
+
     # markers
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
     frame_marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
@@ -236,6 +237,12 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.cube_vel = torch.zeros((self.num_envs, 6), device=self.device)
         
+        # instantiate target position and rotations
+        self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        self.goal_location = torch.tensor([-0.3, 0.3, 0.0], device=self.device)
+        
+        
         # defining axes for the alignment
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
@@ -280,6 +287,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # add markers
         self.ee_marker = VisualizationMarkers(self.cfg.frame_marker_cfg.replace(prim_path="/Visuals/endEffector"))
         self.cube_marker = VisualizationMarkers(self.cfg.frame_marker_cfg.replace(prim_path="Visuals/cube"))
+        self.target_marker = VisualizationMarkers(self.cfg.frame_marker_cfg.replace(prim_path="Visuals/target"))
 
     # pre-physics steps
 
@@ -476,7 +484,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         # randomize cube local position
         cube_local_pos = torch.zeros((len(env_ids), 3), device=self.device)
-        # cube_local_pos += sample_uniform(-0.1, 0.1, (len(env_ids), 3), self.device)
         cube_local_pos[:, :2] += sample_uniform(-0.1, 0.1, (len(env_ids), 2), self.device)
 
         # cube position relative to its environment origin
@@ -487,6 +494,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self._dexcube.write_root_state_to_sim(cube_init_state, env_ids=env_ids)
         self._compute_intermediate_values(env_ids)
         
+        # target location
+        target_local_pos = self.scene.env_origins[env_ids] + self.goal_location
+        target_local_rot = torch.tensor([1, 0, 0, 0], device=self.device).repeat((len(env_ids), 1))
+        self.target_marker.visualize(target_local_pos, target_local_rot)
+    
 
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
@@ -506,7 +518,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_pos = self._dexcube.data.body_link_state_w[:, 0, :3]  # (num_envs, 3)
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
-        
         
         POS = self.robot_grasp_pos
         ROT = self.robot_grasp_rot
