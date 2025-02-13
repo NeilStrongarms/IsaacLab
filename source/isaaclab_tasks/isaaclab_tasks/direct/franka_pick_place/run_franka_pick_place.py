@@ -40,7 +40,7 @@ def main():
     while simulation_app.is_running():
         with torch.inference_mode():
             # resetting scene periodically
-            if count % 2000 == 0:
+            if count % 1000 == 0:
                 count = 0
                 env.reset()
                 print("-" * 80)

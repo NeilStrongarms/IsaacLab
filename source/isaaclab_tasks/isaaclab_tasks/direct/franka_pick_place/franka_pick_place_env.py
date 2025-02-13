@@ -81,7 +81,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
                 "panda_joint7": 0.469,
                 "panda_finger_joint.*": 0.035,
             },
-            pos=(0.45, 0.0, 0.0),
+            pos=(0.5, 0.0, 0.0),
             rot=(0.0, 0.0, 0.0, 1.0),
         ),
         actuators={
@@ -158,6 +158,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     lift_reward_scale = 15
     velocity_penalty_scale = -0.0001 * 2
     action_penalty_scale = -0.0001
+    target_reward_scale = 15
 
 
 class FrankaPickPlaceEnv(DirectRLEnv):
@@ -240,7 +241,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # instantiate target position and rotations
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        self.goal_location = torch.tensor([-0.3, 0.3, 0.0], device=self.device)
         
         
         # defining axes for the alignment
@@ -261,7 +261,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.dist_rew = torch.zeros((self.num_envs, 1), device=self.device)
         self.rot_rew = torch.zeros((self.num_envs, 1), device=self.device)
         self.lift_rew = torch.zeros((self.num_envs, 1), device=self.device)
-        self.velocity_pen= torch.zeros((self.num_envs, 1), device=self.device)
+        self.velocity_pen = torch.zeros((self.num_envs, 1), device=self.device)
         
 
     def _setup_scene(self):
@@ -406,12 +406,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # lifting reward
         lift_choice = "lift"
         cube_offset = 0.024
-        if lift_choice == "one":
-            total_reward = torch.where(self.cube_pos[:, 2] > 0.03, total_reward + 0.25, total_reward)
-            total_reward = torch.where(self.cube_pos[:, 2] > 0.1, total_reward + 0.25, total_reward)
-            total_reward = torch.where(self.cube_pos[:, 2] > 0.2, total_reward + 0.25, total_reward)
-            is_lifted = torch.where(self.cube_pos[:, 2] > 0.04, 1.0, 0.0)
-        elif lift_choice == "lift":
+        if lift_choice == "lift":
             lift_reward = torch.where(self.cube_pos[:, 2] > 0.04, 1.0, 0.0)
         elif lift_choice == "linear":
             lift_reward = self.cube_pos[:, 2] - cube_offset
@@ -421,6 +416,13 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         total_reward += lift_reward * self.cfg.lift_reward_scale
         is_lifted = torch.where(self.cube_pos[:, 2] > 0.1, 1.0, 0.0)
         num_lifted = torch.sum(torch.where(self.cube_pos[:,2] > 0.1, 1.0, 0.0))
+        
+        
+        # getting to target
+        d = torch.norm(self.cube_pos - self.target_pos)
+        target_reward = 1.0 - torch.tanh(d / 0.1)
+        total_reward += target_reward * self.cfg.target_reward_scale
+        
         
         # action penalty
         action_choice = "cabinet"
@@ -437,8 +439,10 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
             "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
             "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
+            "target_reward": (self.cfg.target_reward_scale * target_reward).mean(),
             "num_lifted": (num_lifted),
         }
+        # print(f'cube position: \n{self.cube_pos[:4]} and target position: \n{self.target_pos[:4]} ') # seems all correct
         
         self.dist_rew = self.cfg.dist_reward_scale * dist_reward
         self.rot_rew = self.cfg.rot_reward_scale * rot_reward
@@ -473,7 +477,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
         # resetting robot
         joint_pos = self._robot.data.default_joint_pos[env_ids] + sample_uniform(
-            -0.125, 0.125, (len(env_ids), self._robot.num_joints),self.device,)
+            -0.125, 0.125, (len(env_ids), self._robot.num_joints),self.device)
         joint_pos = torch.clamp(joint_pos, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         joint_vel = torch.zeros_like(joint_pos, device=self.device)
         self._robot.set_joint_position_target(joint_pos, env_ids=env_ids)
@@ -492,12 +496,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # set velocities to zero
         cube_init_state[:, 7:] = 0.0
         self._dexcube.write_root_state_to_sim(cube_init_state, env_ids=env_ids)
-        self._compute_intermediate_values(env_ids)
+        self._compute_intermediate_values(env_ids)     
         
-        # target location
-        target_local_pos = self.scene.env_origins[env_ids] + self.goal_location
-        target_local_rot = torch.tensor([1, 0, 0, 0], device=self.device).repeat((len(env_ids), 1))
-        self.target_marker.visualize(target_local_pos, target_local_rot)
     
 
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
@@ -519,10 +519,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
         
-        POS = self.robot_grasp_pos
-        ROT = self.robot_grasp_rot
-        self.ee_marker.visualize(POS, ROT)
+        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0], device=self.device).repeat(self.num_envs,1)
+        self.target_rot = torch.tensor([1, 0, 0, 0], device=self.device).repeat(self.num_envs,1)
         
-        POS2 = self.cube_pos
-        ROT2 = self.cube_rot
-        self.cube_marker.visualize(POS2,ROT2)
+        self.ee_marker.visualize(self.robot_grasp_pos, self.robot_grasp_rot)
+        self.cube_marker.visualize(self.cube_pos,self.cube_rot)
+        self.target_marker.visualize(self.target_pos, self.target_rot)
+
+
