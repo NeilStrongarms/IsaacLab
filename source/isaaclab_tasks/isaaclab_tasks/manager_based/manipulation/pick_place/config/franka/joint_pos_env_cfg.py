@@ -60,6 +60,27 @@ class FrankaPickPlaceEnvCfg(PickPlaceEnvCfg):
                 ),
             ),
         )
+        
+        # # set scissors as object
+        # self.scene.object = RigidObjectCfg(
+        #     prim_path="{ENV_REGEX_NS}/Object",
+        #     init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0.0, 0.055], rot=[1.0, 0.0, 0.0, 0.0]),
+        #     spawn=UsdFileCfg(
+        #         # Point this to your "037_scissors.usd" on Nucleus or rename + relocate as needed
+        #         usd_path=f"/home/chris/isaacsim_assets/Assets/Isaac/4.5/Isaac/Props/YCB/Axis_Aligned/_37_scissors_rigid.usd",
+        #         scale=(0.8, 0.8, 0.8),
+        #         rigid_props=RigidBodyPropertiesCfg(
+        #             solver_position_iteration_count=16,
+        #             solver_velocity_iteration_count=1,
+        #             max_angular_velocity=1000.0,
+        #             max_linear_velocity=1000.0,
+        #             max_depenetration_velocity=5.0,
+        #             disable_gravity=False,
+        #         ),
+        #     ),
+        # )
+        
+        
 
         # Listens to the required transforms
         marker_cfg = FRAME_MARKER_CFG.copy()

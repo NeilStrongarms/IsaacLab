@@ -47,26 +47,3 @@ gym.register(
     },
     disable_env_checker=True,
 )
-
-gym.register(
-    id="Isaac-Lift-Teddy-Bear-Franka-IK-Abs-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.ik_abs_env_cfg:FrankaTeddyBearLiftEnvCfg",
-    },
-    disable_env_checker=True,
-)
-
-##
-# Inverse Kinematics - Relative Pose Control
-##
-
-gym.register(
-    id="Isaac-Lift-Cube-Franka-IK-Rel-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.ik_rel_env_cfg:FrankaCubeLiftEnvCfg",
-        "robomimic_bc_cfg_entry_point": os.path.join(agents.__path__[0], "robomimic/bc.json"),
-    },
-    disable_env_checker=True,
-)

@@ -125,7 +125,7 @@ class EventCfg:
         mode="reset",
         params={
             "pose_range": {"x": (-0.1, 0.1), "y": (-0.25, 0.25), "z": (0.0, 0.0)},
-            "velocity_range": {},
+            "velocity_range": {"x": (0.0, 0.0), "y": (0.0, 0.0), "z": (0.0, 0.0)},
             "asset_cfg": SceneEntityCfg("object", body_names="Object"),
         },
     )
