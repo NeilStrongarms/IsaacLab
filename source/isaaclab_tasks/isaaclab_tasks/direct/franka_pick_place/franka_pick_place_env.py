@@ -14,7 +14,7 @@ from pxr import UsdGeom
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
-from isaaclab.assets import  Articulation, ArticulationCfg, RigidObjectCfg, RigidObject
+from isaaclab.assets import  Articulation, ArticulationCfg, RigidObjectCfg, RigidObject, AssetBaseCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -25,7 +25,6 @@ from isaaclab.utils.math import sample_uniform
 from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.math import subtract_frame_transforms
-
 
 
 @configclass
@@ -128,6 +127,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
         ),
     )
 
+
     # ground plane
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -154,7 +154,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     
     # reward scales
     dist_reward_scale = 1.0
-    rot_reward_scale = 0.1
+    rot_reward_scale = 0.0
     target_reward_scale = 50
     lift_reward_scale = 10
     velocity_penalty_scale = -0.0001 * 10
@@ -247,19 +247,19 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
-        self.gripper_side_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
+        self.gripper_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
         self.cube_up_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
-        self.cube_side_axis = torch.tensor([0, -1, 0], device=self.device, dtype=torch.float32).repeat(
+        self.cube_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
         self.target_up_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
-        self.target_side_axis = torch.tensor([0, -1, 0], device=self.device, dtype=torch.float32).repeat(
+        self.target_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
 
@@ -267,11 +267,19 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
     def _setup_scene(self):
         
-        self._robot = Articulation(self.cfg.robot)
-        self._dexcube = RigidObject(self.cfg.dexcube)
-        self.scene.articulations["robot"] = self._robot
+        self._robot     = Articulation(self.cfg.robot)
+        self._dexcube   = RigidObject(self.cfg.dexcube)
+        self.scene.articulations["robot"]   = self._robot
         self.scene.rigid_objects["dexcube"] = self._dexcube
-
+        
+        # cfg_table = sim_utils.UsdFileCfg(
+        #     usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Mounts/ThorlabsTable/table_instanceable.usd",
+        #     scale=(0.8, 0.8, 0.8),
+        # )
+        # cfg_table.func(
+        #     "/World/envs/env_.*/Table", cfg_table, translation=(0.5, 0.5, 0.64), orientation=(-0.873, 0.0, 0.0, -0.487)
+        # )
+        
         # loading terrain
         self.cfg.terrain.num_envs = self.scene.cfg.num_envs
         self.cfg.terrain.env_spacing = self.scene.cfg.env_spacing
@@ -383,19 +391,17 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # rotation reward
         # tf_vector(rotation,vector)
         axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
-        axis2 = tf_vector(self.robot_grasp_rot, self.gripper_side_axis)
+        axis2 = tf_vector(self.robot_grasp_rot, self.gripper_y_axis)
         
         axis3 = tf_vector(self.cube_rot, self.cube_up_axis)
-        axis4 = tf_vector(self.cube_rot, self.cube_side_axis)
+        axis4 = tf_vector(self.cube_rot, self.cube_y_axis)
         
         axis5 = tf_vector(self.target_rot, self.target_up_axis)
-        axis6 = tf_vector(self.target_rot, self.target_side_axis)
+        axis6 = tf_vector(self.target_rot, self.target_y_axis)
         
         dot1 = torch.bmm(axis2.view(self.num_envs, 1, 3), axis5.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
         
-        rot_reward1 = 1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
-        # rot_reward2 = torch.sign(dot2) * dot2**2
-        rot_reward = (rot_reward1) # + rot_reward2
+        rot_reward = 1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
         total_reward += rot_reward * self.cfg.rot_reward_scale
         
         # velocity penalty
@@ -417,14 +423,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             lift_reward = torch.exp(self.cube_pos - cube_offset)   
             
         total_reward += lift_reward * self.cfg.lift_reward_scale
-        num_lifted = torch.sum(torch.where(self.cube_pos[:,2] > 0.1, 1.0, 0.0))
-        
         
         # getting to target
         d = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
         target_reward = 1.0 - torch.tanh(d / 0.15)
         total_reward += target_reward * self.cfg.target_reward_scale
-        
         
         # action penalty
         action_choice = "cabinet"
@@ -442,7 +445,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
             "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
             "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
-            "num_lifted": (num_lifted),
         }
         # print(f'cube position: \n{self.cube_pos[:4]} and target position: \n{self.target_pos[:4]} ') # seems all correct
 
@@ -516,7 +518,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
         
-        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.5], device=self.device).repeat(self.num_envs,1)
+        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.7], device=self.device).repeat(self.num_envs,1) #z = 0.64 is about the height of the table
         self.target_rot = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs,1)
         
         self.ee_marker.visualize(self.robot_grasp_pos, self.robot_grasp_rot)
