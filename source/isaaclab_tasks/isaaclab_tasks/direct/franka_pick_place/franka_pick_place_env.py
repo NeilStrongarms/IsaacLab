@@ -159,6 +159,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     lift_reward_scale = 10
     velocity_penalty_scale = -0.0001 * 10
     action_penalty_scale = -0.0001
+    dropping_reward_scale = 1
 
 
 class FrankaPickPlaceEnv(DirectRLEnv):
@@ -227,13 +228,17 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.robot_local_grasp_pos = robot_local_grasp_pose_pos.repeat((self.num_envs, 1))
         self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
         
+        # instantiate finger positions
+        self.left_finger_pos  = torch.zeros((self.num_envs, 3), device=self.device)
+        self.right_finger_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        
         # instantiate grasp pose
         self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
 
         # instantiate hand and cube positions for distance, and direction from hand to cube
-        self.hand_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.hand_rot = torch.zeros((self.num_envs, 4), device=self.device)
+        # self.hand_pos = torch.zeros((self.num_envs, 3), device=self.device)
+        # self.hand_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.cube_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.cube_vel = torch.zeros((self.num_envs, 6), device=self.device)
@@ -241,7 +246,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # instantiate target position and rotations
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        
         
         # defining axes for the alignment
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
@@ -429,6 +433,28 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         target_reward = 1.0 - torch.tanh(d / 0.15)
         total_reward += target_reward * self.cfg.target_reward_scale
         
+        # dropping reward
+        dist_cube_target = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
+        dist_fingers = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
+        tol = 0.2
+        dropping_reward = torch.where(
+            (dist_cube_target < tol) & (dist_fingers > 0.1), # average finger distance is 0.046 when gripping the cube
+            1000000.0 * dist_fingers,
+            torch.zeros_like(dist_fingers)
+        )
+        total_reward += dropping_reward * self.cfg.dropping_reward_scale
+        
+        # Print if any environment has a cube-to-target distance of less than tol
+        # if (dist_cube_target < tol).any():
+        #     num_reached = (dist_cube_target < tol).sum().item()
+        #     print(f"Threshold reached in {num_reached} environments")
+        #     reached_envs = dist_cube_target < tol
+        #     mean_finger_distance = dist_fingers[reached_envs].mean().item()
+        #     print(f'Average finger distance for reached environments: {mean_finger_distance}')
+
+        
+        
+        
         # action penalty
         action_choice = "cabinet"
         if action_choice == "cabinet":
@@ -437,16 +463,18 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         else:
             action_penalty = 0
         
+
+        
         # logging rewards
         self.extras["log"] = {
             "dist_reward": (self.cfg.dist_reward_scale * dist_reward).mean(),
             "rot_reward": (self.cfg.rot_reward_scale * rot_reward).mean(),
             "target_reward": (self.cfg.target_reward_scale * target_reward).mean(),
             "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
+            "dropping_reward": (self.cfg.dropping_reward_scale * dropping_reward).mean(),
             "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
             "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
         }
-        # print(f'cube position: \n{self.cube_pos[:4]} and target position: \n{self.target_pos[:4]} ') # seems all correct
 
         return total_reward
     
@@ -520,6 +548,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.7], device=self.device).repeat(self.num_envs,1) #z = 0.64 is about the height of the table
         self.target_rot = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs,1)
+        
+        
+        self.left_finger_pos[env_ids] = self._robot.data.body_pos_w[env_ids, self.left_finger_link_idx]
+        self.right_finger_pos[env_ids] = self._robot.data.body_pos_w[env_ids, self.right_finger_link_idx]
+        
         
         self.ee_marker.visualize(self.robot_grasp_pos, self.robot_grasp_rot)
         self.cube_marker.visualize(self.cube_pos,self.cube_rot)
