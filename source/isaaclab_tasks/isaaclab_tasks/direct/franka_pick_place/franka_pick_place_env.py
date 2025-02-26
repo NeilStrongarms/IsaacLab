@@ -26,6 +26,7 @@ from isaaclab.markers import VisualizationMarkers
 from isaaclab.markers.config import FRAME_MARKER_CFG
 from isaaclab.utils.math import subtract_frame_transforms
 
+from torch.utils.tensorboard.writer import SummaryWriter
 
 @configclass
 class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
@@ -154,12 +155,13 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     
     # reward scales
     dist_reward_scale = 1.0
-    rot_reward_scale = 0.0
-    target_reward_scale = 50
+    grasp_target_reward_scale = 0
+    cube_target_reward_scale = 100
     lift_reward_scale = 10
+    dropping_reward_scale = 0
     velocity_penalty_scale = -0.0001 * 10
     action_penalty_scale = -0.0001
-    dropping_reward_scale = 1
+
 
 
 class FrankaPickPlaceEnv(DirectRLEnv):
@@ -186,7 +188,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
             return torch.tensor([px, py, pz, qw, qx, qy, qz], device=device)
 
-        #  
+        # 
         self.dt = self.cfg.sim.dt * self.cfg.decimation
         self.robot_dof_targets = torch.zeros((self.num_envs, self._robot.num_joints), device=self.device)
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
@@ -266,9 +268,24 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.target_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
+        
+        self.dist_reward_scale = self.cfg.dist_reward_scale
+        self.grasp_target_reward_scale = self.cfg.grasp_target_reward_scale
+        self.cube_target_reward_scale = self.cfg.cube_target_reward_scale
+        self.lift_reward_scale = self.cfg.lift_reward_scale
+        self.dropping_reward_scale = self.cfg.dropping_reward_scale
+        self.velocity_penalty_scale = self.cfg.velocity_penalty_scale
+        self.action_penalty_scale = self.cfg.action_penalty_scale
+        
+        self.weights_flag = 0
+        self.closed_finger_dist = torch.zeros((self.num_envs,1), device=self.device)
+        self.writer = SummaryWriter(log_dir='/home/chris/Repositories/SemesterThesis/tensorboard_logs/')
 
 
-
+    def close(self):
+        self.writer.close()
+        super().close()
+        
     def _setup_scene(self):
         
         self._robot     = Articulation(self.cfg.robot)
@@ -378,43 +395,46 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         total_reward = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self._compute_intermediate_values()   # need to compute intermediate values first
         
-        # distance reward
+        dist_cube_target = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
+        dist_grasp_target = torch.norm(self.robot_grasp_pos - self.target_pos, p=2, dim=1)
+        dist_fingers = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
+        
+        tol = 0.2
+        num_reached = (dist_cube_target < tol).sum().item()
+        if num_reached >= self.num_envs*0.5 and self.weights_flag == 0:
+            print(f'======================CHANGING WEIGHTS======================')
+            self.weights_flag = 1
+            self.closed_finger_dist = dist_fingers.clone() # save  finger distance
+            torch.save(self.closed_finger_dist, '/home/chris/Repositories/SemesterThesis/tensorboard_logs/closed_finger_dist.pt')
+
+            #update reward scales
+            self.dist_reward_scale = self.dist_reward_scale*0
+            self.grasp_target_reward_scale = 1
+            self.cube_target_reward_scale = 0
+            self.lift_reward_scale = self.lift_reward_scale*0.1
+            self.dropping_reward_scale = 10
+            self.velocity_penalty_scale = self.velocity_penalty_scale*5
+            self.action_penalty_scale = self.action_penalty_scale*2
+        
+        # distance reward - grasp to cube
         choice = "lift"
         if choice == "cabinet":
             d = torch.norm(self.robot_grasp_pos - self.cube_pos, p=2, dim=-1)
             dist_reward = 1.0 / (1.0 + d**2)
             dist_reward *= dist_reward
             dist_reward = torch.where(d <= 0.04, dist_reward * 2, dist_reward) # bonus for under 0.02
-
         elif choice == "lift":
             d = torch.norm(self.cube_pos - self.robot_grasp_pos, dim=1)
             dist_reward = 1.0 - torch.tanh(d / 0.1)
-
-        total_reward += dist_reward * self.cfg.dist_reward_scale
+        total_reward += dist_reward * self.dist_reward_scale
         
-        # rotation reward
-        # tf_vector(rotation,vector)
-        axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
-        axis2 = tf_vector(self.robot_grasp_rot, self.gripper_y_axis)
+        # target reward - grasp to target
+        grasp_target_reward = 1.0 - torch.tanh(dist_grasp_target / 0.15)
+        total_reward += grasp_target_reward * self.grasp_target_reward_scale
         
-        axis3 = tf_vector(self.cube_rot, self.cube_up_axis)
-        axis4 = tf_vector(self.cube_rot, self.cube_y_axis)
-        
-        axis5 = tf_vector(self.target_rot, self.target_up_axis)
-        axis6 = tf_vector(self.target_rot, self.target_y_axis)
-        
-        dot1 = torch.bmm(axis2.view(self.num_envs, 1, 3), axis5.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
-        
-        rot_reward = 1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
-        total_reward += rot_reward * self.cfg.rot_reward_scale
-        
-        # velocity penalty
-        vel_choice = "lift"
-        if vel_choice == "one":
-            vel_penalty = torch.norm(self._robot.data.joint_vel, p=2, dim=-1)
-        elif vel_choice == "lift":
-            vel_penalty = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
-        total_reward += vel_penalty * self.cfg.velocity_penalty_scale
+        # target reward - cube to target
+        cube_target_reward = 1.0 - torch.tanh(dist_cube_target / 0.15)
+        total_reward += cube_target_reward * self.cube_target_reward_scale
         
         # lifting reward
         lift_choice = "lift"
@@ -426,75 +446,73 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         elif lift_choice == "exponential":
             lift_reward = torch.exp(self.cube_pos - cube_offset)   
             
-        total_reward += lift_reward * self.cfg.lift_reward_scale
+        total_reward += lift_reward * self.lift_reward_scale
+
+        # # dropping reward
+        # dropping_reward = torch.exp(10 * torch.abs(dist_fingers-self.closed_finger_dist.squeeze()))
+        # total_reward += dropping_reward * self.dropping_reward_scale
         
-        # getting to target
-        d = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-        target_reward = 1.0 - torch.tanh(d / 0.15)
-        total_reward += target_reward * self.cfg.target_reward_scale
-        
-        # dropping reward
-        dist_cube_target = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-        dist_fingers = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
-        tol = 0.2
+        # Dropping reward: Encourage opening the gripper when the cube is near the target
+        reached_envs = dist_cube_target < tol
         dropping_reward = torch.where(
-            (dist_cube_target < tol) & (dist_fingers > 0.1), # average finger distance is 0.046 when gripping the cube
-            1000000.0 * dist_fingers,
+            reached_envs,
+            torch.exp(10 * torch.abs(dist_fingers - self.closed_finger_dist.squeeze())),  # Ensure compatible shapes
             torch.zeros_like(dist_fingers)
         )
-        total_reward += dropping_reward * self.cfg.dropping_reward_scale
-        
-        # Print if any environment has a cube-to-target distance of less than tol
-        # if (dist_cube_target < tol).any():
-        #     num_reached = (dist_cube_target < tol).sum().item()
-        #     print(f"Threshold reached in {num_reached} environments")
-        #     reached_envs = dist_cube_target < tol
-        #     mean_finger_distance = dist_fingers[reached_envs].mean().item()
-        #     print(f'Average finger distance for reached environments: {mean_finger_distance}')
+        total_reward += dropping_reward * self.dropping_reward_scale
 
-        
-        
-        
         # action penalty
         action_choice = "cabinet"
         if action_choice == "cabinet":
             action_penalty = torch.sum(self.actions**2, dim=-1)
-            total_reward += action_penalty * self.cfg.action_penalty_scale
+            total_reward += action_penalty * self.action_penalty_scale
         else:
             action_penalty = 0
         
-
+        # velocity penalty
+        vel_choice = "lift"
+        if vel_choice == "one":
+            vel_penalty = torch.norm(self._robot.data.joint_vel, p=2, dim=-1)
+        elif vel_choice == "lift":
+            vel_penalty = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
+        total_reward += vel_penalty * self.velocity_penalty_scale
         
         # logging rewards
         self.extras["log"] = {
-            "dist_reward": (self.cfg.dist_reward_scale * dist_reward).mean(),
-            "rot_reward": (self.cfg.rot_reward_scale * rot_reward).mean(),
-            "target_reward": (self.cfg.target_reward_scale * target_reward).mean(),
-            "lifting_reward": (self.cfg.lift_reward_scale * lift_reward).mean(),
-            "dropping_reward": (self.cfg.dropping_reward_scale * dropping_reward).mean(),
-            "velocity_penalty": (self.cfg.velocity_penalty_scale * vel_penalty).mean(),
-            "action_penalty": (self.cfg.action_penalty_scale * action_penalty).mean(),
+            "dist_reward": (self.dist_reward_scale * dist_reward).mean(),
+            "cube_target_reward": (self.cube_target_reward_scale * cube_target_reward).mean(),
+            "grasp_target_reward": (self.grasp_target_reward_scale * grasp_target_reward).mean(),
+            "lifting_reward": (self.lift_reward_scale * lift_reward).mean(),
+            "dropping_reward": (self.dropping_reward_scale * dropping_reward).mean(),
+            "velocity_penalty": (self.velocity_penalty_scale * vel_penalty).mean(),
+            "action_penalty": (self.action_penalty_scale * action_penalty).mean(),
+            "dropping_reward_scale": (self.dropping_reward_scale),
+            "cube_target_reward_scale": (self.cube_target_reward_scale),
+            "grasp_target_reward_scale": (self.grasp_target_reward_scale),
+            "num_reached": (num_reached),
+            "num_envs": (self.num_envs),
         }
+
+        # Log rewards to TensorBoard
+        self.writer.add_scalar('Rewards/Distance', (self.dist_reward_scale * dist_reward).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Rewards/Cube_to_Target', (self.cube_target_reward_scale * cube_target_reward).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Rewards/Gasp_to_Target', (self.grasp_target_reward_scale * grasp_target_reward).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Rewards/Lifting', (self.lift_reward_scale * lift_reward).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Rewards/Dropping', (self.dropping_reward_scale * dropping_reward).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), self.episode_length_buf.sum().item())
+        self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), self.episode_length_buf.sum().item())
 
         return total_reward
     
 
-
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        
-        # check if cube has been lifted high enough
-        # terminated = self.cube_pos[:,2] > 0.3
-        
                 
         # checking if cube has fallen over
         cube_local_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
         cube_up_world = quat_rotate(self.cube_rot, cube_local_z)  # quat_rotate(q,v)
         world_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
         dot_product = torch.sum(cube_up_world * world_z, dim=1)  # Shape: (num_envs,)
-        terminated = dot_product < 0.05
-        # if terminated.any():
-        #     print("TERMINATED: CUBE FELL OVER")
-                    
+        terminated = dot_product < 0.05                    
         
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
@@ -525,8 +543,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self._dexcube.write_root_state_to_sim(cube_init_state, env_ids=env_ids)
         self._compute_intermediate_values(env_ids)     
         
-    
-
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
