@@ -245,7 +245,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
         
         # misc
-        self.weights_flag = 0
+        self.stage_flag = 0
+        
         self.closed_finger_dist = torch.ones((self.num_envs,1), device=self.device)
         self.writer = SummaryWriter(log_dir='/home/chris/Repositories/SemesterThesis/tensorboard_logs/')
 
@@ -294,8 +295,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
     def _apply_action(self):
         self._robot.set_joint_position_target(self.robot_dof_targets)
              
-       
-
     def _get_observations(self) -> dict:
         # cube position
 
@@ -357,10 +356,36 @@ class FrankaPickPlaceEnv(DirectRLEnv):
     def _get_rewards(self) -> torch.Tensor:
         total_reward = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self._compute_intermediate_values()   # need to compute intermediate values first
+        
         cube_grasp_dist = torch.norm(self.cube_pos - self.robot_grasp_pos, dim=1)
         cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
         fingers_dist = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
         
+        num_grasps = torch.sum(cube_grasp_dist < 0.1)
+        num_lifts = torch.sum(self.cube_pos[:, 2] > 0.04)
+        num_reached_target = torch.sum(cube_target_dist < 0.1)
+        num_envs_towards_target = 0
+        if num_grasps < 0.75 * self.num_envs and self.stage_flag == 0: # stage one: getting hand close
+            self._reward_scheduler(1)
+            self.stage_flag = 1
+            num_envs_towards_target = num_grasps
+            print("======================= STAGE ONE =======================")
+        elif num_grasps > 0.75 * self.num_envs and self.stage_flag == 1: # stage two: lifting
+            self._reward_scheduler(2)
+            self.stage_flag = 2
+            num_envs_towards_target = num_lifts
+            print("======================= STAGE TWO =======================")
+        elif num_lifts > 0.75 * self.num_envs and self.stage_flag == 2: # stage three: getting to target
+            self._reward_scheduler(3)
+            self.stage_flag = 3
+            num_envs_towards_target = num_reached_target
+            print("======================= STAGE THREE =======================")
+        elif num_reached_target > 0.75 * self.num_envs and self.stage_flag == 3: # stage four: dropping
+            self._reward_scheduler(4)
+            self.stage_flag = 4
+            num_envs_towards_target = torch.sum(fingers_dist > 0.048)
+            print("======================= STAGE FOUR =======================")
+            
         # distance reward
         dist_reward = 1.0 - torch.tanh(cube_grasp_dist / 0.1)
         total_reward += dist_reward * self.dist_reward_scale
@@ -378,12 +403,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         total_reward += target_reward * self.target_reward_scale
         
         # dropping reward
-        tol = 0.2
-        dropping_reward = torch.where(
-            (cube_target_dist < tol) & (fingers_dist > 0.1), # average finger distance is 0.046 when gripping the cube
-            1000000.0 * fingers_dist,
-            torch.zeros_like(fingers_dist)
-        )
+        dropping_reward = torch.exp(fingers_dist - 0.041)
         total_reward += dropping_reward * self.dropping_reward_scale
                
         # action penalty
@@ -398,6 +418,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "dropping_reward": (self.dropping_reward_scale * dropping_reward).mean(),
             "velocity_penalty": (self.velocity_penalty_scale * vel_penalty).mean(),
             "action_penalty": (self.action_penalty_scale * action_penalty).mean(),
+            "stage": (self.stage_flag),
+            "num_envs_towards_target": (num_envs_towards_target),
         }
         
         # Log rewards to TensorBoard
@@ -411,19 +433,35 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         return total_reward
     
 
-    def _reward_schedule(self, stage_idx, env_ids: torch.Tensor | None = None):
-        # four stages: distance, lifting, target, dropping
-        if stage_idx == 1:
+    
+    def _reward_scheduler(self, stage_idx, env_ids: torch.Tensor | None = None):
+
+        if stage_idx == 1: # getting hand close
             self.dist_reward_scale = 1
+            self.target_reward_scale = 0
+            self.lift_reward_scale = 0
+            self.dropping_reward_scale = 0
+            
+        elif stage_idx == 2: # lifting
             self.dist_reward_scale = 1
-            self.target_reward_scale = 1
-            self.lift_reward_scale = 1
-            self.velocity_penalty_scale = 1
-            self.action_penalty_scale = 1
-            self.dropping_reward_scale = 1
-        elif stage_idx ==2:
+            self.target_reward_scale = 0
+            self.lift_reward_scale = 10
+            self.dropping_reward_scale = 0
+            
+        elif stage_idx == 3: # approaching target
             self.dist_reward_scale = 0
+            self.target_reward_scale = 10
+            self.lift_reward_scale = 1
+            self.dropping_reward_scale = 0.1
+            
+        elif stage_idx == 4: # dropping
+            self.dist_reward_scale = 0
+            self.target_reward_scale = 0
+            self.lift_reward_scale = 0
+            self.dropping_reward_scale = 10
+            
         return
+
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
                         
