@@ -536,12 +536,15 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
                         
-        # checking if cube has fallen over
-        cube_local_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
-        cube_up_world = quat_rotate(self.cube_rot, cube_local_z)  # quat_rotate(q,v)
-        world_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
-        dot_product = torch.sum(cube_up_world * world_z, dim=1)  # Shape: (num_envs,)
-        terminated = dot_product < 0.05                    
+        # # checking if cube has fallen over
+        # cube_local_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
+        # cube_up_world = quat_rotate(self.cube_rot, cube_local_z)  # quat_rotate(q,v)
+        # world_z = torch.tensor([0.0, 0.0, 1.0], device=self.device).repeat((self.num_envs, 1))
+        # dot_product = torch.sum(cube_up_world * world_z, dim=1)  # Shape: (num_envs,)
+        # terminated = dot_product < 0.05                    
+        
+        # check if cube is in air
+        terminated = self.cube_pos[:,2] > 2.0
         
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
