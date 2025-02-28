@@ -158,7 +158,6 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     lift_reward_scale = 10
     velocity_penalty_scale = -0.0001 * 10
     action_penalty_scale = -0.0001
-    dropping_reward_scale = 1
 
 
 class FrankaPickPlaceEnv(DirectRLEnv):
@@ -256,7 +255,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.lift_reward_scale = self.cfg.lift_reward_scale
         self.velocity_penalty_scale = self.cfg.velocity_penalty_scale
         self.action_penalty_scale = self.cfg.action_penalty_scale
-        self.dropping_reward_scale = self.cfg.dropping_reward_scale
 
 
     def _setup_scene(self):
@@ -306,7 +304,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
         num_reached_target = torch.sum(cube_target_dist < 0.2)
-        if num_reached_target > 0.75 * self.num_envs:
+        if (num_reached_target > 0.75 * self.num_envs):
             print("=========================== OPENING FINGERS ===========================")
             self._compute_intermediate_values()
             finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
@@ -320,7 +318,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             
              
     def _get_observations(self) -> dict:
-        # cube position
 
         # vector from grasp to cube
         grasp_to_cube = self.cube_pos - self.robot_grasp_pos
@@ -328,14 +325,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         joint_pos = self._robot.data.joint_pos
         # joint velocities of the robot
         joint_vel = self._robot.data.joint_vel
-        # scaled positions
-        dof_pos_scaled = (
-            2.0
-            * (self._robot.data.joint_pos - self.robot_dof_lower_limits)
-            / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
-            - 1.0
-        )
-        
         # object position in robot root frame
         object_pos_b, _ = subtract_frame_transforms(
             self._robot.data.root_state_w[:, :3], self._robot.data.root_state_w[:, 3:7], self.cube_pos
@@ -354,7 +343,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
                 self.actions,               # 9 elements
                 ], dim=-1)
             
-        elif choice == "me":
+        elif choice == "OG":
             obs = torch.cat([
                 self.robot_grasp_pos,       # 3 elements
                 self.cube_pos,              # 3 elements <<
@@ -362,16 +351,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
                 joint_pos,                  # 9 elements <<
                 joint_vel                   # 9 elements <<
             ], dim=-1)
-            
-        elif choice == "cabinet":
-            obs = torch.cat([
-                dof_pos_scaled,                                             # 9 elements
-                self._robot.data.joint_vel * self.cfg.dof_velocity_scale,   # 9 elements
-                grasp_to_cube,                                              # 3 elements
-                self.cube_pos,                                              # 3 elements
-                self.cube_vel,                                              # 6 elements
-            ], dim = -1)
-
+        
         # observations = {"policy": torch.clamp(obs, -5.0, 5.0)}
         observations = {"policy": obs}
         return observations
@@ -384,7 +364,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         cube_grasp_dist = torch.norm(self.cube_pos - self.robot_grasp_pos, p=2, dim=1)
         cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
         fingers_dist = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
-        grasp_target_dist = torch.norm(self.robot_grasp_pos - self.target_pos, p=2, dim=1)
         
         num_grasps = torch.sum(cube_grasp_dist < 0.1)
         num_lifts = torch.sum(self.cube_pos[:, 2] > 0.04)
@@ -394,24 +373,15 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         if num_grasps < 0.75 * self.num_envs and self.stage_flag == 0: # stage one: getting hand close
             self._reward_scheduler(1)
             self.stage_flag = 1
-            print("======================= STAGE ONE =======================")
             
         elif num_grasps > 0.75 * self.num_envs and self.stage_flag == 1: # stage two: lifting
             self._reward_scheduler(2)
             self.stage_flag = 2
-            print("======================= STAGE TWO =======================")
             
         elif num_lifts > 0.75 * self.num_envs and self.stage_flag == 2: # stage three: getting to target
             self._reward_scheduler(3)
             self.stage_flag = 3
-            print("======================= STAGE THREE =======================")
             
-        # elif num_reached_target > 0.75 * self.num_envs and self.stage_flag == 3: # stage four: dropping
-        #     self._reward_scheduler(4)
-        #     self.stage_flag = 4
-        #     self.action_flag = 1
-        #     print("======================= STAGE FOUR =======================")
-        
         if self.stage_flag == 1:
             self.num_envs_towards_target = num_grasps
         elif self.stage_flag == 2:
@@ -437,41 +407,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         target_reward = 1.0 - torch.tanh(cube_target_dist / 0.15)
         total_reward += target_reward * self.target_reward_scale
         
-        # # dropping reward
-        # dropping_reward = torch.where(
-        #     grasp_target_dist < 0.3 ,
-        #     torch.exp(50*(fingers_dist - 0.041)) - 0.1287,
-        #     torch.zeros_like(fingers_dist)
-        #     )
-        
-        # dropping_reward = torch.where(
-        #     (grasp_target_dist < 0.3) & (cube_target_dist < 0.4),
-        #     torch.exp(50 * (fingers_dist - 0.041)) - 0.1287,  # Clamp the exponential reward
-        #     torch.zeros_like(fingers_dist)
-        # )
-        
-        # dropping_reward = torch.where(
-        #     (grasp_target_dist < 0.1) & (self.cube_pos[:, 2] > 0.04),
-        #     torch.exp(50 * (fingers_dist - 0.041)) - 0.1287,
-        #     torch.zeros_like(fingers_dist)
-        # )
-        
-        # xy_dist = torch.sqrt((self.target_pos[:, 0] - self.cube_pos[:, 0])**2 + (self.target_pos[:, 1] - self.cube_pos[:, 1])**2)
-        # dropping_reward = torch.where(
-        #     (grasp_target_dist < 0.1) & (xy_dist < 0.2),
-        #     torch.exp(50 * (fingers_dist - 0.041)) - 0.1287,
-        #     torch.zeros_like(fingers_dist)
-        # )
-        
-        # xy_dist = torch.sqrt((self.target_pos[:, 0] - self.cube_pos[:, 0])**2 + (self.target_pos[:, 1] - self.cube_pos[:, 1])**2)
-        # dropping_reward = torch.where(
-        #     (grasp_target_dist < 0.1) & (xy_dist < 0.2),
-        #     torch.exp(50 * (fingers_dist - 2*0.041)) - 0.1287,
-        #     torch.zeros_like(fingers_dist)
-        # )
-        dropping_reward = torch.zeros_like(fingers_dist)
-        total_reward += dropping_reward * self.dropping_reward_scale
-        
         # action penalty
         action_penalty = torch.sum(self.actions**2, dim=-1)
         total_reward += action_penalty * self.action_penalty_scale
@@ -481,7 +416,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "dist_reward": (self.dist_reward_scale * dist_reward).mean(),
             "target_reward": (self.target_reward_scale * target_reward).mean(),
             "lifting_reward": (self.lift_reward_scale * lift_reward).mean(),
-            "dropping_reward": (self.dropping_reward_scale * dropping_reward).mean(),
             "velocity_penalty": (self.velocity_penalty_scale * vel_penalty).mean(),
             "action_penalty": (self.action_penalty_scale * action_penalty).mean(),
             "stage": (self.stage_flag),
@@ -489,12 +423,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "finger_dist": (fingers_dist).mean(),
         }
         
-        current_step = self.episode_length_buf[0].item()
         # Log rewards to TensorBoard
+        current_step = self.episode_length_buf[0].item()
         self.writer.add_scalar('Rewards/Distance', (self.dist_reward_scale * dist_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Cube_to_Target', (self.target_reward_scale * target_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Lifting', (self.lift_reward_scale * lift_reward).mean().item(), current_step)
-        self.writer.add_scalar('Rewards/Dropping', (self.dropping_reward_scale * dropping_reward).mean().item(), current_step)
         self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), current_step)
         self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), current_step)
         self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
@@ -510,26 +443,17 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             self.dist_reward_scale = 1
             self.target_reward_scale = 0
             self.lift_reward_scale = 0
-            self.dropping_reward_scale = 0
             
         elif stage_idx == 2: # lifting
             self.dist_reward_scale = 1
             self.target_reward_scale = 0
             self.lift_reward_scale = 10
-            self.dropping_reward_scale = 0
             
         elif stage_idx == 3: # approaching target
             self.dist_reward_scale = 0
             self.target_reward_scale = 50
             self.lift_reward_scale = 1
-            self.dropping_reward_scale = 1
-            
-        elif stage_idx == 4: # dropping
-            self.dist_reward_scale = 0 # cube-grasp-dist
-            self.target_reward_scale = 0 # cube-target-dist
-            self.lift_reward_scale = 0
-            self.dropping_reward_scale = 10
-            self.action_flag = 1
+            self.velocity_penalty_scale *= 10
             
         return
 
