@@ -318,7 +318,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
     # better in training
     def _apply_action(self):
         
-        task = "train"
+        task = "play"
         if task == "train":
             self._robot.set_joint_position_target(self.robot_dof_targets)
         elif task == "play":
@@ -326,8 +326,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             num_reached_target = torch.sum(cube_target_dist < 0.2)
             joint_7_velocity = self._robot.data.joint_vel[:, 6]
             
-            mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
-            mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
+            # mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
+            mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.01)
             env_ids_open_fingers = torch.nonzero(mask).squeeze(-1)
             if env_ids_open_fingers.numel() > 0:
                 print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
