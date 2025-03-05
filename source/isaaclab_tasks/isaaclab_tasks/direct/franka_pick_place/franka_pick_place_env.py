@@ -272,7 +272,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.num_envs_towards_target = 0
         self.closed_finger_dist = torch.ones((self.num_envs,1), device=self.device)
         self.writer = SummaryWriter(log_dir='/home/chris/Repositories/SemesterThesis/tensorboard_logs/')
-
+        self.global_step = 0
+        
         self.dist_reward_scale = self.cfg.dist_reward_scale
         self.target_reward_scale = self.cfg.target_reward_scale
         self.lift_reward_scale = self.cfg.lift_reward_scale
@@ -447,7 +448,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # velocity penalty
         vel_penalty = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
         total_reward += vel_penalty * self.velocity_penalty_scale
-        
+
 
         # logging rewards
         self.extras["log"] = {
@@ -464,7 +465,9 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         }
         
         # Log rewards to TensorBoard
-        current_step = self.episode_length_buf[0].item()
+        # current_step = self.episode_length_buf[0].item()
+        current_step = self.global_step
+        
         self.writer.add_scalar('Rewards/Distance', (self.dist_reward_scale * dist_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Cube_to_Target', (self.target_reward_scale * target_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Lifting', (self.lift_reward_scale * lift_reward).mean().item(), current_step)
@@ -472,13 +475,16 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.writer.add_scalar('Rewards/Grasp_align', (self.grasp_alignment_scale * grasp_alignment_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Target_align', (self.target_alignment_scale * target_alignment_reward).mean().item(), current_step)
         
-        # self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), current_step)
-        # self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), current_step)
+        self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), current_step)
+        self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), current_step)
         
-        # self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
-        # self.writer.add_scalar('Properties/Envs_at_target', (self.num_envs_towards_target), current_step)
+        self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
+        self.writer.add_scalar('Properties/Envs_at_target', (self.num_envs_towards_target), current_step)
         self.writer.add_scalar('Properties/Stage', (self.stage_flag), current_step)
-
+        
+        self.global_step += 1
+        if self.global_step % 100 == 0:
+            self.writer.flush()
         
         return total_reward
 
