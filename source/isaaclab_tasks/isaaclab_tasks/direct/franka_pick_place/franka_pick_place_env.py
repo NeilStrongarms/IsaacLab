@@ -315,7 +315,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         targets = self.robot_dof_targets + self.robot_dof_speed_scales * scaling
         self.robot_dof_targets[:] = torch.clamp(targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
         
-    # better in training
+    # need to manually set to train or play here.
+    # TODO: automatically select train or play
     def _apply_action(self):
         
         task = "play"
@@ -325,12 +326,15 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
             num_reached_target = torch.sum(cube_target_dist < 0.2)
             joint_7_velocity = self._robot.data.joint_vel[:, 6]
+            total_velocity = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
             
             # mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
-            mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.01)
+            # mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.02)
+            mask = (cube_target_dist < 0.2) & (total_velocity < 2.0)
             env_ids_open_fingers = torch.nonzero(mask).squeeze(-1)
             if env_ids_open_fingers.numel() > 0:
-                print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
+                # print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
+                # print(f'number of envs opening: {env_ids_open_fingers.numel()} out of {self.num_envs}')
                 self._compute_intermediate_values(env_ids_open_fingers)
 
                 finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
@@ -340,7 +344,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             # Regardless, apply the current self.robot_dof_targets to all environments
             self._robot.set_joint_position_target(self.robot_dof_targets)
 
-             
+ 
     def _get_observations(self) -> dict:
 
         grasp_to_cube = self.cube_pos - self.robot_grasp_pos
@@ -376,8 +380,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # observations = {"policy": torch.clamp(obs, -5.0, 5.0)}
         observations = {"policy": obs}
         return observations
-    
-    
+
+
     def _get_rewards(self) -> torch.Tensor:
         total_reward = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self._compute_intermediate_values()   # need to compute intermediate values first
@@ -477,9 +481,9 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
         
         return total_reward
-    
 
-    
+
+
     def _reward_scheduler(self, stage_idx, env_ids: torch.Tensor | None = None):
 
         if stage_idx == 1: # getting hand close
@@ -519,7 +523,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
-    
+
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
 
@@ -555,7 +559,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.target_rot[env_ids] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
         
         self._compute_intermediate_values(env_ids)     
-        
+
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
