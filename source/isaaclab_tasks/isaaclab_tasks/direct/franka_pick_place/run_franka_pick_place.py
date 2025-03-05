@@ -53,13 +53,11 @@ def main():
             joint_efforts[:,7:9] = finger_efforts
             # step the environment
             obs, rew, terminated, truncated, info = env.step(joint_efforts) # Shape is (num_envs, action_dim)
-            POS = env.robot_grasp_pos
-            ROT = env.robot_grasp_rot
-            # print(f"Grasp Position: {POS}")  # Should be (num_envs, 3)
 
             POS2 = env.cube_pos
+            Z_POS = env.cube_pos[:, 2]
             ROT2 = env.cube_rot
-            # print(f"Cube Position: {POS2}")  # Should be (num_envs, 3)
+            print(f"Cube Z Position: {Z_POS}")  # Should be (num_envs, 1)
 
 
             count += 1

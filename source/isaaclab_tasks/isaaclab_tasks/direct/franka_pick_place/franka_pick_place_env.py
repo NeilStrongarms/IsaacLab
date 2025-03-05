@@ -156,6 +156,8 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     dist_reward_scale = 1.0
     target_reward_scale = 50
     lift_reward_scale = 10
+    grasp_alignment_scale = 1
+    target_alignment_scale = 0
     velocity_penalty_scale = -0.0001 * 10
     action_penalty_scale = -0.0001
 
@@ -243,6 +245,28 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
         
+        
+        # defining axes for the alignment
+        self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.gripper_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.cube_z_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.cube_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.target_z_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        self.target_y_axis = torch.tensor([0, 1, 0], device=self.device, dtype=torch.float32).repeat(
+            (self.num_envs, 1)
+        )
+        
+        
         # misc
         self.stage_flag = 0
         self.num_envs_towards_target = 0
@@ -254,7 +278,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.lift_reward_scale = self.cfg.lift_reward_scale
         self.velocity_penalty_scale = self.cfg.velocity_penalty_scale
         self.action_penalty_scale = self.cfg.action_penalty_scale
-
+        self.grasp_alignment_scale = self.cfg.grasp_alignment_scale
+        self.target_alignment_scale = self.cfg.target_alignment_scale
 
     def _setup_scene(self):
         
@@ -293,44 +318,28 @@ class FrankaPickPlaceEnv(DirectRLEnv):
     # better in training
     def _apply_action(self):
         
-        cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-        num_reached_target = torch.sum(cube_target_dist < 0.2)
-        joint_7_velocity = self._robot.data.joint_vel[:, 6]
-        
-        if (num_reached_target > 0.75 * self.num_envs) and (torch.abs(joint_7_velocity) < 1).all():
-            print("=========================== OPENING FINGERS ===========================")
-            self._compute_intermediate_values()
-            finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
-            for idx in finger_joint_indices:
-                self.robot_dof_targets[:, idx] = self.robot_dof_upper_limits[idx]
+        task = "train"
+        if task == "train":
             self._robot.set_joint_position_target(self.robot_dof_targets)
-        else:
+        elif task == "play":
+            cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
+            num_reached_target = torch.sum(cube_target_dist < 0.2)
+            joint_7_velocity = self._robot.data.joint_vel[:, 6]
+            
+            mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
+            mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
+            env_ids_open_fingers = torch.nonzero(mask).squeeze(-1)
+            if env_ids_open_fingers.numel() > 0:
+                print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
+                self._compute_intermediate_values(env_ids_open_fingers)
+
+                finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
+                for idx in finger_joint_indices:
+                    self.robot_dof_targets[env_ids_open_fingers, idx] = self.robot_dof_upper_limits[idx]
+
+            # Regardless, apply the current self.robot_dof_targets to all environments
             self._robot.set_joint_position_target(self.robot_dof_targets)
-            
 
-    # better in playing
-    # def _apply_action(self):
-        
-    #     cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-    #     num_reached_target = torch.sum(cube_target_dist < 0.2)
-    #     joint_7_velocity = self._robot.data.joint_vel[:, 6]
-
-    #     mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
-    #     env_ids_open_fingers = torch.nonzero(mask).squeeze(-1)
-
-    #     if (num_reached_target > 0.75 * self.num_envs):
-    #         # If at least one environment meets the condition, open the fingers for those envs
-    #         if env_ids_open_fingers.numel() > 0:
-    #             print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
-    #             self._compute_intermediate_values(env_ids_open_fingers)
-
-    #             finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
-    #             for idx in finger_joint_indices:
-    #                 self.robot_dof_targets[env_ids_open_fingers, idx] = self.robot_dof_upper_limits[idx]
-
-    #         # Regardless, apply the current self.robot_dof_targets to all environments
-    #     self._robot.set_joint_position_target(self.robot_dof_targets)
-            
              
     def _get_observations(self) -> dict:
 
@@ -413,6 +422,20 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         target_reward = 1.0 - torch.tanh(cube_target_dist / 0.15)
         total_reward += target_reward * self.target_reward_scale
         
+        # grasp alignment reward - gripper forward with cube z
+        axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
+        axis2 = tf_vector(self.cube_rot, self.cube_z_axis)
+        dot1 = torch.bmm(axis1.view(self.num_envs, 1, 3), axis2.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
+        grasp_alignment_reward = -1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
+        total_reward += grasp_alignment_reward * self.grasp_alignment_scale
+        
+        # target alignment reward - gripper forward with target z
+        axis3 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
+        axis4 = tf_vector(self.target_rot, self.target_z_axis)
+        dot2 = torch.bmm(axis3.view(self.num_envs, 1, 3), axis4.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
+        target_alignment_reward = -1*(torch.sign(dot2) * dot2**2) # multiply by -1 if vectors point away from each other
+        total_reward += target_alignment_reward * self.target_alignment_scale
+        
         # action penalty
         action_penalty = torch.sum(torch.square(self.actions), dim=-1)
         total_reward += action_penalty * self.action_penalty_scale
@@ -427,6 +450,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "dist_reward": (self.dist_reward_scale * dist_reward).mean(),
             "target_reward": (self.target_reward_scale * target_reward).mean(),
             "lifting_reward": (self.lift_reward_scale * lift_reward).mean(),
+            "grasp_align_reward": (self.grasp_alignment_scale * grasp_alignment_reward).mean(),
+            "target_align_reward": (self.target_alignment_scale * target_alignment_reward).mean(),
             "velocity_penalty": (self.velocity_penalty_scale * vel_penalty).mean(),
             "action_penalty": (self.action_penalty_scale * action_penalty).mean(),
             "stage": (self.stage_flag),
@@ -440,10 +465,14 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.writer.add_scalar('Rewards/Cube_to_Target', (self.target_reward_scale * target_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Lifting', (self.lift_reward_scale * lift_reward).mean().item(), current_step)
         self.writer.add_scalar('Rewards/Total_reward', (self.num_envs_towards_target), current_step)
-        self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), current_step)
-        self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), current_step)
-        self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
-        self.writer.add_scalar('Properties/Envs_at_target', (self.num_envs_towards_target), current_step)
+        self.writer.add_scalar('Rewards/Grasp_align', (self.grasp_alignment_scale * grasp_alignment_reward).mean().item(), current_step)
+        self.writer.add_scalar('Rewards/Target_align', (self.target_alignment_scale * target_alignment_reward).mean().item(), current_step)
+        
+        # self.writer.add_scalar('Penalties/Velocity', (self.velocity_penalty_scale * vel_penalty).mean().item(), current_step)
+        # self.writer.add_scalar('Penalties/Action', (self.action_penalty_scale * action_penalty).mean().item(), current_step)
+        
+        # self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
+        # self.writer.add_scalar('Properties/Envs_at_target', (self.num_envs_towards_target), current_step)
         self.writer.add_scalar('Properties/Stage', (self.stage_flag), current_step)
 
         
@@ -457,18 +486,22 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             self.dist_reward_scale = 1
             self.target_reward_scale = 0
             self.lift_reward_scale = 0
+            self.grasp_alignment_scale = 0.1
             
         elif stage_idx == 2: # lifting
             self.dist_reward_scale = 1
             self.target_reward_scale = 0
             self.lift_reward_scale = 10
+            self.grasp_alignment_scale = 0.5
             
         elif stage_idx == 3: # approaching target
             self.dist_reward_scale = 0
-            self.target_reward_scale = 50
-            self.lift_reward_scale = 1
-            self.velocity_penalty_scale *= 10
-            
+            self.target_reward_scale = 40
+            self.lift_reward_scale = 0.5
+            # self.velocity_penalty_scale *= 10
+            self.grasp_alignment_scale = 0
+            self.target_alignment_scale = 5
+        
         return
 
 
@@ -511,6 +544,16 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # set velocities to zero
         cube_init_state[:, 7:] = 0.0
         self._dexcube.write_root_state_to_sim(cube_init_state, env_ids=env_ids)
+        
+        # resetting target with random offsets in x,y,z
+        target_offsets = sample_uniform(-0.1, 0.1, (len(env_ids), 3), self.device)
+        self.target_pos[env_ids] = (
+            self.scene.env_origins[env_ids]
+            + torch.tensor([0.35, 0.35, 0.4], device=self.device)
+            + target_offsets
+        )
+        self.target_rot[env_ids] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device)
+        
         self._compute_intermediate_values(env_ids)     
         
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
@@ -531,9 +574,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.cube_pos = self._dexcube.data.body_link_state_w[:, 0, :3]  # (num_envs, 3)
         self.cube_rot = self._dexcube.data.body_link_state_w[:, 0, 3:7]  # (num_envs, 4)
         self.cube_vel = self._dexcube.data.body_link_state_w[:, 0, 7:]  # (num_envs, 6)
-        
-        self.target_pos = self.scene.env_origins + torch.tensor([0.5, 0.5, 0.7], device=self.device).repeat(self.num_envs,1) #z = 0.64 is about the height of the table
-        self.target_rot = torch.tensor([1.0, 0.0, 0.0, 0.0], device=self.device).repeat(self.num_envs,1)
         
         self.left_finger_pos[env_ids] = self._robot.data.body_pos_w[env_ids, self.left_finger_link_idx]
         self.right_finger_pos[env_ids] = self._robot.data.body_pos_w[env_ids, self.right_finger_link_idx]
