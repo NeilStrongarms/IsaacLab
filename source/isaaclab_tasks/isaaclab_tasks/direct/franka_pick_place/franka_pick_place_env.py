@@ -33,7 +33,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     episode_length_s = 8.3333 # 5.0 in franka Lift
     decimation = 2
     action_space = 9         # the dimension of the action space for each environment
-    observation_space = 27    # the dimension of the observation space from each environment instance
+    observation_space = 30    # the dimension of the observation space from each environment instance
     state_space = 0
 
     # simulation
@@ -325,24 +325,17 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             self._robot.set_joint_position_target(self.robot_dof_targets)
         elif task == "play":
             cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-            num_reached_target = torch.sum(cube_target_dist < 0.2)
-            joint_7_velocity = self._robot.data.joint_vel[:, 6]
             total_velocity = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
             
-            # mask = (self.stage_flag == 3) & (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.5)
-            # mask = (cube_target_dist < 0.2) & (torch.abs(joint_7_velocity) < 0.02)
             mask = (cube_target_dist < 0.2) & (total_velocity < 2.0)
             env_ids_open_fingers = torch.nonzero(mask).squeeze(-1)
             if env_ids_open_fingers.numel() > 0:
-                # print("=========================== OPENING FINGERS FOR SELECTED ENVS ===========================")
-                # print(f'number of envs opening: {env_ids_open_fingers.numel()} out of {self.num_envs}')
                 self._compute_intermediate_values(env_ids_open_fingers)
 
                 finger_joint_indices = self._robot.find_joints("panda_finger_joint.*")[0]
                 for idx in finger_joint_indices:
                     self.robot_dof_targets[env_ids_open_fingers, idx] = self.robot_dof_upper_limits[idx]
 
-            # Regardless, apply the current self.robot_dof_targets to all environments
             self._robot.set_joint_position_target(self.robot_dof_targets)
 
  
@@ -406,7 +399,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         elif num_lifts > 0.75 * self.num_envs and self.stage_flag == 2: # stage three: getting to target
             self._reward_scheduler(3)
             self.stage_flag = 3
-            
+        
+        # for logging to see progression from one stage to the next
         if self.stage_flag == 1:
             self.num_envs_towards_target = num_grasps
         elif self.stage_flag == 2:
@@ -415,7 +409,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             self.num_envs_towards_target = num_reached_target
 
         
-        # distance reward
+        # distance reward: grasp-cube
         dist_reward = 1.0 - torch.tanh(cube_grasp_dist / 0.1)
         total_reward += dist_reward * self.dist_reward_scale
         
@@ -423,18 +417,18 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         lift_reward = torch.where(self.cube_pos[:, 2] > 0.04, 1.0, 0.0) # cube z-position at spawn [0.0240]
         total_reward += lift_reward * self.lift_reward_scale
         
-        # target reward
+        # distance reward: cube-target
         target_reward = 1.0 - torch.tanh(cube_target_dist / 0.15)
         total_reward += target_reward * self.target_reward_scale
         
-        # grasp alignment reward - gripper forward with cube z
+        # alignment reward: gripper forward with cube z
         axis1 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
         axis2 = tf_vector(self.cube_rot, self.cube_z_axis)
         dot1 = torch.bmm(axis1.view(self.num_envs, 1, 3), axis2.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
         grasp_alignment_reward = -1*(torch.sign(dot1) * dot1**2) # multiply by -1 if vectors point away from each other
         total_reward += grasp_alignment_reward * self.grasp_alignment_scale
         
-        # target alignment reward - gripper forward with target z
+        # alignment reward: gripper forward with target z
         axis3 = tf_vector(self.robot_grasp_rot, self.gripper_forward_axis)
         axis4 = tf_vector(self.target_rot, self.target_z_axis)
         dot2 = torch.bmm(axis3.view(self.num_envs, 1, 3), axis4.view(self.num_envs, 3, 1)).squeeze(-1).squeeze(-1)
@@ -465,7 +459,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         }
         
         # Log rewards to TensorBoard
-        # current_step = self.episode_length_buf[0].item()
         current_step = self.global_step
         
         self.writer.add_scalar('Rewards/Distance', (self.dist_reward_scale * dist_reward).mean().item(), current_step)
