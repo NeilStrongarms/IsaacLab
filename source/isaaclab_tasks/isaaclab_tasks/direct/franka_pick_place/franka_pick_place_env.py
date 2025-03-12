@@ -55,7 +55,6 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=3.0, replicate_physics=True)
 
     # robot
-    # Articulation USD Path: http://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/4.2/Isaac/Robots/Franka/franka_instanceable.usd
     robot = ArticulationCfg(
         prim_path="/World/envs/env_.*/Robot",
         spawn=sim_utils.UsdFileCfg(
@@ -108,7 +107,6 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
         },
     )
 
-    
     # cube
     dexcube = RigidObjectCfg(
         prim_path="/World/envs/env_.*/dexcube",
@@ -127,7 +125,6 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
         ),
     )
 
-
     # ground plane
     terrain = TerrainImporterCfg(
         prim_path="/World/ground",
@@ -141,7 +138,6 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
             restitution=0.0,
         ),
     )
-
 
     # markers
     frame_marker_cfg = FRAME_MARKER_CFG.copy()
@@ -236,7 +232,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.robot_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.robot_grasp_rot = torch.zeros((self.num_envs, 4), device=self.device)
 
-        # instantiate hand and cube positions for distance, and direction from hand to cube
+        # instantiate hand and cube positions
         self.cube_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.cube_rot = torch.zeros((self.num_envs, 4), device=self.device)
         self.cube_vel = torch.zeros((self.num_envs, 6), device=self.device)
@@ -244,7 +240,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # instantiate target position and rotations
         self.target_pos = torch.zeros((self.num_envs, 3), device=self.device)
         self.target_rot = torch.zeros((self.num_envs, 4), device=self.device)
-        
         
         # defining axes for the alignment
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
@@ -270,10 +265,10 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # misc
         self.stage_flag = 0
         self.num_envs_towards_target = 0
-        self.closed_finger_dist = torch.ones((self.num_envs,1), device=self.device)
         self.writer = SummaryWriter(log_dir='/home/chris/Repositories/SemesterThesis/tensorboard_logs/')
         self.global_step = 0
         
+        # reward scales defined here for reward scheduling
         self.dist_reward_scale = self.cfg.dist_reward_scale
         self.target_reward_scale = self.cfg.target_reward_scale
         self.lift_reward_scale = self.cfg.lift_reward_scale
@@ -320,7 +315,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
     # TODO: automatically select train or play
     def _apply_action(self):
         
-        task = "play"
+        task = "train"
         if task == "train":
             self._robot.set_joint_position_target(self.robot_dof_targets)
         elif task == "play":
@@ -485,7 +480,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
     def _reward_scheduler(self, stage_idx, env_ids: torch.Tensor | None = None):
 
-        if stage_idx == 1: # getting hand close
+        if stage_idx == 1: # hand approaching cube
             self.dist_reward_scale = 1
             self.target_reward_scale = 0
             self.lift_reward_scale = 0
