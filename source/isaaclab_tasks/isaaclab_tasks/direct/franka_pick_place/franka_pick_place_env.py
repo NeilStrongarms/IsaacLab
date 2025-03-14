@@ -79,8 +79,8 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
                 "panda_joint7": 0.469,
                 "panda_finger_joint.*": 0.035,
             },
-            pos=(0.5, 0.0, 0.0),
-            rot=(0.0, 0.0, 0.0, 1.0),
+            pos=(0.0, 0.0, 0.0),
+            rot=(0.0, 0.0, 0.0, 0.0),
         ),
         actuators={
             "panda_shoulder": ImplicitActuatorCfg(
@@ -110,7 +110,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     # cube
     dexcube = RigidObjectCfg(
         prim_path="/World/envs/env_.*/dexcube",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0, 0.0], rot=[1, 0, 0, 0]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.0], rot=[1, 0, 0, 0]),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
             scale=(0.8, 0.8, 0.8),
@@ -375,31 +375,24 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         total_reward = torch.zeros(self.num_envs, device=self.device, dtype=torch.float32)
         self._compute_intermediate_values()   # need to compute intermediate values first
         
+        # cube
         cube_grasp_dist = torch.norm(self.cube_pos - self.robot_grasp_pos, p=2, dim=1)
         cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
-        fingers_dist = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
-        
-        # Get joint 7's linear velocity (first 3 components of body velocity)
+        # joint 7
         joint_7_linear_vel = self._robot.data.body_vel_w[:, self.hand_link_idx, :3]
         joint_7_speed = torch.norm(joint_7_linear_vel, p=2, dim=1)
-        
-        # For gripper speed (average of both fingers)
+        # grasp
         left_finger_linear_vel = self._robot.data.body_vel_w[:, self.left_finger_link_idx, :3]
         right_finger_linear_vel = self._robot.data.body_vel_w[:, self.right_finger_link_idx, :3]
         grasp_linear_vel = (left_finger_linear_vel + right_finger_linear_vel) / 2.0
         grasp_speed = torch.norm(grasp_linear_vel, p=2, dim=1)
         
-        
         scale = self.cfg.dexcube.spawn.scale[2]
         cube_height_above_ground = self.cube_pos[:, 2] - 0.03 * scale # 0.03 is the cube position at scale = 1
         
         grasp_close_to_cube = cube_grasp_dist < 0.1
-        cube_is_lifted = cube_height_above_ground > 0.03
-        cube_close_to_target = cube_target_dist < 0.2
-        total_velocity = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
-        
-        slow_enough = (grasp_speed < 0.32)
-        # slow_enough = (joint_7_speed < 0.7)
+        cube_is_lifted      = cube_height_above_ground > 0.03
+        slow_enough         = grasp_speed < 0.32
         
         # stage 0: initialization
         # stage 1: approaching cube
@@ -471,9 +464,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             # "velocity_penalty": (self.env_velocity_penalty_scale * vel_penalty).mean(),
             # "action_penalty": (self.env_action_penalty_scale * action_penalty).mean(),
             "mode stage": (self.env_stage_flags.float().mode().values.item()),
-            # "grasp speed": (grasp_speed.mean()),
-            "joint_7_speed": (joint_7_speed.mean()),
-            "cube_grasp_dist": (cube_grasp_dist).mean()
         }
         
         # logging rewards to TensorBoard
@@ -488,11 +478,8 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.writer.add_scalar('Penalties/Velocity', (self.env_velocity_penalty_scale * vel_penalty).mean().item(), current_step)
         self.writer.add_scalar('Penalties/Action', (self.env_action_penalty_scale * action_penalty).mean().item(), current_step)
         
-        self.writer.add_scalar('Properties/Finger_dist', (fingers_dist).mean().item(), current_step)
         self.writer.add_scalar('Properties/Envs_at_target', (self.num_envs_towards_target), current_step)
         self.writer.add_scalar('Properties/Stage', self.env_stage_flags.float().mode().values.item(), current_step)
-        self.writer.add_scalar('Properties/Grasp_speed', grasp_speed.mean(), current_step)
-        self.writer.add_scalar('Properties/J7_speed', joint_7_speed.mean(), current_step)
         
         self.global_step += 1
         if self.global_step % 100 == 0:
@@ -557,7 +544,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         cube_init_state = self._dexcube.data.default_root_state[env_ids].clone()
         
         # randomize cube local position
-        # cube_local_pos = torch.zeros((len(env_ids), 3), device=self.device)
         cube_init_state[:, :2] += sample_uniform(-0.1, 0.1, (len(env_ids), 2), self.device)
 
         # cube position relative to its environment origin
