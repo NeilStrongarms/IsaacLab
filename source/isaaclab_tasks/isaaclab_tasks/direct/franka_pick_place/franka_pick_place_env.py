@@ -14,7 +14,7 @@ from pxr import UsdGeom
 
 import isaaclab.sim as sim_utils
 from isaaclab.actuators.actuator_cfg import ImplicitActuatorCfg
-from isaaclab.assets import  Articulation, ArticulationCfg, RigidObjectCfg, RigidObject, AssetBaseCfg
+from isaaclab.assets import  Articulation, ArticulationCfg, RigidObjectCfg, RigidObject
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -110,7 +110,7 @@ class FrankaPickPlaceEnvCfg(DirectRLEnvCfg):
     # cube
     dexcube = RigidObjectCfg(
         prim_path="/World/envs/env_.*/dexcube",
-        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.055], rot=[1, 0, 0, 0]),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=[0.0, 0, 0.0], rot=[1, 0, 0, 0]),
         spawn=sim_utils.UsdFileCfg(
             usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
             scale=(0.8, 0.8, 0.8),
@@ -379,27 +379,22 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         cube_target_dist = torch.norm(self.cube_pos - self.target_pos, p=2, dim=1)
         fingers_dist = torch.norm(self.left_finger_pos - self.right_finger_pos, p=2, dim=1)
         
-
+        # Get joint 7's linear velocity (first 3 components of body velocity)
+        joint_7_linear_vel = self._robot.data.body_vel_w[:, self.hand_link_idx, :3]
+        joint_7_speed = torch.norm(joint_7_linear_vel, p=2, dim=1)
         
-        if hasattr(self._robot.data, 'body_vel_w'):
-            # Get joint 7's linear velocity (first 3 components of body velocity)
-            joint_7_linear_vel = self._robot.data.body_vel_w[:, self.hand_link_idx, :3]
-            
-            # Calculate speed (magnitude of velocity vector)
-            joint_7_speed = torch.norm(joint_7_linear_vel, p=2, dim=1)
-            
-            # For gripper speed (average of both fingers)
-            left_finger_linear_vel = self._robot.data.body_vel_w[:, self.left_finger_link_idx, :3]
-            right_finger_linear_vel = self._robot.data.body_vel_w[:, self.right_finger_link_idx, :3]
-            
-            # Average the velocities
-            grasp_linear_vel = (left_finger_linear_vel + right_finger_linear_vel) / 2.0
-            
-            # Calculate speed
-            grasp_speed = torch.norm(grasp_linear_vel, p=2, dim=1)
+        # For gripper speed (average of both fingers)
+        left_finger_linear_vel = self._robot.data.body_vel_w[:, self.left_finger_link_idx, :3]
+        right_finger_linear_vel = self._robot.data.body_vel_w[:, self.right_finger_link_idx, :3]
+        grasp_linear_vel = (left_finger_linear_vel + right_finger_linear_vel) / 2.0
+        grasp_speed = torch.norm(grasp_linear_vel, p=2, dim=1)
         
-        grasp_close_to_cube = cube_grasp_dist < 0.15
-        cube_is_lifted = self.cube_pos[:, 2] > 0.04
+        
+        scale = self.cfg.dexcube.spawn.scale[2]
+        cube_height_above_ground = self.cube_pos[:, 2] - 0.03 * scale # 0.03 is the cube position at scale = 1
+        
+        grasp_close_to_cube = cube_grasp_dist < 0.1
+        cube_is_lifted = cube_height_above_ground > 0.03
         cube_close_to_target = cube_target_dist < 0.2
         total_velocity = torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
         
@@ -410,12 +405,14 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         # stage 1: approaching cube
         # stage 2: attempting to lift
         # stage 3: approaching target
-        stage_0_to_1 = (self.env_stage_flags == 0)
-        stage_1_to_2 = (self.env_stage_flags == 1) & grasp_close_to_cube & slow_enough
-        stage_2_to_3 = (self.env_stage_flags == 2) & cube_is_lifted & grasp_close_to_cube
-        
-        stage_3_to_2 = (self.env_stage_flags == 3) & (~cube_is_lifted | ~grasp_close_to_cube)
-        stage_2_to_1 = (self.env_stage_flags == 2) & ~grasp_close_to_cube
+        old_flags = self.env_stage_flags.clone()
+
+        stage_0_to_1 = (old_flags == 0)
+        stage_1_to_2 = (old_flags == 1) & grasp_close_to_cube & slow_enough
+        stage_2_to_3 = (old_flags == 2) & cube_is_lifted & grasp_close_to_cube
+        stage_3_to_2 = (old_flags == 3) & (~cube_is_lifted | ~grasp_close_to_cube)
+        grasp_buffer_dist = 0.09  # Slightly larger threshold to exit stage
+        stage_2_to_1 = (old_flags == 2) & (cube_grasp_dist > grasp_buffer_dist)
 
         self.env_stage_flags[stage_0_to_1] = 1
         self.env_stage_flags[stage_1_to_2] = 2
@@ -431,7 +428,10 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         total_reward += dist_reward * self.env_dist_reward_scale
         
         # lifting reward
-        lift_reward = torch.where(self.cube_pos[:, 2] > 0.04, 1.0, 0.0) # cube z-position at spawn [0.0240]
+        # lift_reward = torch.where(cube_height_above_ground > 0.02, 1.0, 0.0) # cube z-position at spawn [0.0240]
+        # total_reward += lift_reward * self.env_lift_reward_scale
+        
+        lift_reward = 1.0 - torch.exp(-20 * torch.clamp(cube_height_above_ground, min=0.0))
         total_reward += lift_reward * self.env_lift_reward_scale
         
         # distance reward: cube-target
@@ -468,10 +468,10 @@ class FrankaPickPlaceEnv(DirectRLEnv):
             "lifting_reward": (self.env_lift_reward_scale * lift_reward).mean(),
             "grasp_align_reward": (self.env_grasp_alignment_scale * grasp_alignment_reward).mean(),
             "target_align_reward": (self.env_target_alignment_scale * target_alignment_reward).mean(),
-            "velocity_penalty": (self.env_velocity_penalty_scale * vel_penalty).mean(),
-            "action_penalty": (self.env_action_penalty_scale * action_penalty).mean(),
+            # "velocity_penalty": (self.env_velocity_penalty_scale * vel_penalty).mean(),
+            # "action_penalty": (self.env_action_penalty_scale * action_penalty).mean(),
             "mode stage": (self.env_stage_flags.float().mode().values.item()),
-            "grasp speed": (grasp_speed.mean()),
+            # "grasp speed": (grasp_speed.mean()),
             "joint_7_speed": (joint_7_speed.mean()),
             "cube_grasp_dist": (cube_grasp_dist).mean()
         }
@@ -504,7 +504,6 @@ class FrankaPickPlaceEnv(DirectRLEnv):
 
     def _reward_scheduler(self, env_stage_flag):
 
-        # set the reward scales to the following for all environments that have env_stage_flag == 1
         self.env_dist_reward_scale[env_stage_flag == 1] = 5
         self.env_target_reward_scale[env_stage_flag == 1] = 0
         self.env_lift_reward_scale[env_stage_flag == 1] = 0
@@ -512,7 +511,7 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         self.env_target_alignment_scale[env_stage_flag == 1] = 0
 
 
-        self.env_dist_reward_scale[env_stage_flag == 2] = 0.3
+        self.env_dist_reward_scale[env_stage_flag == 2] = 1
         self.env_target_reward_scale[env_stage_flag == 2] = 0
         self.env_lift_reward_scale[env_stage_flag == 2] = 10
         self.env_grasp_alignment_scale[env_stage_flag == 2] = 0.1
@@ -558,11 +557,11 @@ class FrankaPickPlaceEnv(DirectRLEnv):
         cube_init_state = self._dexcube.data.default_root_state[env_ids].clone()
         
         # randomize cube local position
-        cube_local_pos = torch.zeros((len(env_ids), 3), device=self.device)
-        cube_local_pos[:, :2] += sample_uniform(-0.1, 0.1, (len(env_ids), 2), self.device)
+        # cube_local_pos = torch.zeros((len(env_ids), 3), device=self.device)
+        cube_init_state[:, :2] += sample_uniform(-0.1, 0.1, (len(env_ids), 2), self.device)
 
         # cube position relative to its environment origin
-        cube_init_state[:, :3] = self.scene.env_origins[env_ids] + cube_local_pos
+        cube_init_state[:, :3] = self.scene.env_origins[env_ids] + cube_init_state[:,:3]
 
         # set velocities to zero
         cube_init_state[:, 7:] = 0.0
